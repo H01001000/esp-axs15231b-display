@@ -8,10 +8,11 @@
 #![deny(clippy::large_stack_frames)]
 #![feature(allocator_api)]
 
+use alloc::boxed::Box;
 use bt_hci::controller::ExternalController;
 use defmt::info;
 use embassy_executor::Spawner;
-use embassy_time::{Duration, Instant};
+use embassy_time::{Duration, Instant, Timer};
 use embedded_graphics::{
     pixelcolor::Rgb565,
     prelude::*,
@@ -28,6 +29,7 @@ use esp_hal::{
     timer::timg::TimerGroup,
 };
 use esp_radio::ble::controller::BleConnector;
+use lvgl::{Color, Display, DrawBuffer, TextAlign, style::Style, widgets::Label};
 use panic_rtt_target as _;
 use trouble_host::prelude::*;
 
@@ -96,64 +98,76 @@ async fn main(spawner: Spawner) -> ! {
     );
 
     lcd_display.init().await;
-    lcd_display.clear(Rgb565::BLACK);
-    lcd_display.flush().await;
 
     let mut backlight = Output::new(peripherals.GPIO1, Level::Low, OutputConfig::default());
 
+    // Initialize the LVGL library. This must be called before any other LVGL functions are used.
+    lvgl::init();
+
+    const HOR_RES: u32 = 320;
+    const VER_RES: u32 = 480;
+    const BUFFER_VER_RES: u32 = 10;
+
+    let buffer = Box::new_in(
+        DrawBuffer::<{ (HOR_RES * BUFFER_VER_RES) as usize }>::default(),
+        esp_alloc::ExternalMemory,
+    );
+
+    let stats: esp_alloc::HeapStats = esp_alloc::HEAP.stats();
+    info!("{}", stats);
+
+    // let display = Display::register_raw(draw_buffer, hor_res, ver_res, flush_cb, rounder_cb, set_px_cb, clear_cb, monitor_cb, wait_cb, clean_dcache_cb, drv_update_cb, render_start_cb, drop)
+
+    // Register your display update callback with LVGL. The closure you pass here will be called
+    // whenever LVGL has updates to be painted to the display.
+    let display = Display::register(*buffer, HOR_RES, VER_RES, |refresh| {
+        let start_y = (HOR_RES * (refresh.area.y1 as u32)) as usize;
+        let end_y = (HOR_RES * (refresh.area.y2 as u32)) as usize;
+        let len_y = (HOR_RES * ((refresh.area.y2 - refresh.area.y1) as u32)) as usize;
+
+        lcd_display.framebuffer[start_y..end_y].copy_from_slice(unsafe {
+            core::slice::from_raw_parts(
+                refresh.colors[0..len_y].as_ptr() as *const u16,
+                refresh.colors[0..len_y].len(),
+            )
+        });
+
+        // lcd_display.draw_iter(refresh.as_pixels()).unwrap();
+    })
+    .unwrap();
+
     backlight.set_high();
 
-    let mut x = 0.0;
-    let mut x_v = 0.0;
-    let x_a = 9.81 * 10.0;
-    let mut dt = 0;
-    let mut sim_start = Instant::now();
+    let mut screen = display.get_scr_act().unwrap();
+    let mut screen_style = Style::default();
+    screen_style.set_bg_color(Color::from_rgb((0, 0, 0)));
+    screen_style.set_radius(0);
+    lvgl::Widget::add_style(&mut screen, lvgl::Part::Main, &mut screen_style).unwrap();
+
+    let mut time = Label::new().unwrap();
+    time.set_text(cstr_core::cstr!("20:46")).unwrap();
+    let mut style_time = Style::default();
+    style_time.set_text_color(Color::from_rgb((255, 255, 255)));
+    style_time.set_text_align(TextAlign::Center);
+
+    lvgl::Widget::add_style(&mut time, lvgl::Part::Main, &mut style_time).unwrap();
+    lvgl::Widget::set_width(&mut time, 240).unwrap();
+    lvgl::Widget::set_height(&mut time, 240).unwrap();
+
     let mut y = 0;
-    let mut color = 0u16;
 
     loop {
-        let start = Instant::now();
-        lcd_display.clear(Rgb565::BLACK);
+        lvgl::Widget::set_align(&mut time, lvgl::Align::Center, 0, y).unwrap();
 
-        let circle = Circle::new(Point::new(x as i32, y), 20)
-            .into_styled(PrimitiveStyle::with_stroke(Rgb565::new(255, 255, 255), 1));
-
-        circle.draw(&mut lcd_display);
-        let draw_time = start.elapsed();
-
-        // Update the display
-        let flush_start = Instant::now();
+        lvgl::task_handler();
         lcd_display.flush().await;
-        let flush_time = flush_start.elapsed();
-
-        x += x_v * (dt as f32 / 1000.0) + 0.5 * x_a * (dt as f32 / 1000.0) * (dt as f32 / 1000.0);
-        x_v += x_a * (dt as f32 / 1000.0);
-
-        if x >= 300.0 {
-            x_v = x_v * -0.5;
-            x = 300.0;
-        }
 
         y += 1;
-
-        if sim_start.elapsed() > Duration::from_secs(10) {
-            x = 0.0;
-            x_v = 0.0;
+        if y > 480 {
             y = 0;
-            sim_start = Instant::now();
-            // lcd_display.clear(Rgb565::BLACK);
         }
 
-        dt = start.elapsed().as_millis();
-
-        info!(
-            "Draw time: {} ms, Flush time: {} ms, total frame time: {} ms",
-            draw_time.as_millis(),
-            flush_time.as_millis(),
-            dt
-        );
-        // Timer::after(Duration::from_millis(5)).await;
+        Timer::after(Duration::from_millis(5)).await;
+        lvgl::tick_inc(Duration::from_millis(5).try_into().unwrap());
     }
-
-    // for inspiration have a look at the examples at https://github.com/esp-rs/esp-hal/tree/esp-hal-v1.0.0/examples
 }
