@@ -1,0 +1,23 @@
+[target.xtensa-esp32s3-none-elf]
+runner = "probe-rs run --chip=esp32s3 --preverify --always-print-stacktrace --no-location --catch-hardfault"
+
+[env]
+DEFMT_LOG = "info"
+DEP_LV_CONFIG_PATH = { value = "include", relative = true }
+BINDGEN_EXTRA_CLANG_ARGS = "-I/Users/jonathanho/.rustup/toolchains/esp/xtensa-esp-elf/esp-15.2.0_20250920/xtensa-esp-elf/xtensa-esp-elf/include"
+ESP_HAL_CONFIG_PSRAM_MODE = "octal"
+
+# Required to make lvgl build correctly otherwise get wrong file type (ie compiled for a big endian system and target is little endian)
+CROSS_COMPILE = "xtensa-esp32s3-elf"
+
+# Required for lvgl otherwise the build would fail with the error -> dangerous relocation: call8: call target out of range
+# for some lvgl functions
+CFLAGS_xtensa_esp32s3_none_elf = "-mlongcalls"
+
+[build]
+rustflags = ["-C", "link-arg=-nostartfiles"]
+
+target = "xtensa-esp32s3-none-elf"
+
+[unstable]
+build-std = ["alloc", "core"]
